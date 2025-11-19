@@ -231,6 +231,8 @@ export interface ConfigParameters {
   toolDiscoveryCommand?: string;
   toolCallCommand?: string;
   mcpServerCommand?: string;
+  mcpServerUrl?: string;
+  liteLLMMcpServerUrl?: string;
   mcpServers?: Record<string, MCPServerConfig>;
   userMemory?: string;
   geminiMdFileCount?: number;
@@ -333,6 +335,8 @@ export class Config {
   private readonly toolDiscoveryCommand: string | undefined;
   private readonly toolCallCommand: string | undefined;
   private readonly mcpServerCommand: string | undefined;
+  private mcpServerUrl: string | undefined;
+  private readonly liteLLMMcpServerUrl: string | undefined;
   private mcpServers: Record<string, MCPServerConfig> | undefined;
   private userMemory: string;
   private geminiMdFileCount: number;
@@ -443,6 +447,8 @@ export class Config {
     this.toolDiscoveryCommand = params.toolDiscoveryCommand;
     this.toolCallCommand = params.toolCallCommand;
     this.mcpServerCommand = params.mcpServerCommand;
+    this.mcpServerUrl = params.mcpServerUrl;
+    this.liteLLMMcpServerUrl = params.liteLLMMcpServerUrl;
     this.mcpServers = params.mcpServers;
     this.allowedMcpServers = params.allowedMcpServers ?? [];
     this.blockedMcpServers = params.blockedMcpServers ?? [];
@@ -904,6 +910,14 @@ export class Config {
 
   getMcpServerCommand(): string | undefined {
     return this.mcpServerCommand;
+  }
+
+  getMcpServerUrl(): string | undefined {
+    return this.mcpServerUrl;
+  }
+
+  getLiteLLMMcpServerUrl(): string | undefined {
+    return this.liteLLMMcpServerUrl;
   }
 
   /**

@@ -298,6 +298,12 @@ export async function main() {
         'selectedAuthType',
         AuthType.COMPUTE_ADC,
       );
+    } else {
+      settings.setValue(
+        SettingScope.User,
+        'selectedAuthType',
+        AuthType.LITELLM,
+      );
     }
   }
 

@@ -122,6 +122,7 @@
   "dependencies": {
     "ink": "npm:@jrichman/ink@6.4.3",
     "latest-version": "^9.0.0",
+    "nock": "^14.0.10",
     "simple-git": "^3.28.0"
   },
   "optionalDependencies": {
