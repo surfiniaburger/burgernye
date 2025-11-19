@@ -1055,6 +1055,27 @@ const SETTINGS_SCHEMA = {
     },
   },
 
+  litellm: {
+    type: 'object',
+    label: 'LiteLLM',
+    category: 'LiteLLM',
+    requiresRestart: true,
+    default: {},
+    description: 'Settings for LiteLLM.',
+    showInDialog: false,
+    properties: {
+      mcpServerUrl: {
+        type: 'string',
+        label: 'LiteLLM MCP Server URL',
+        category: 'LiteLLM',
+        requiresRestart: true,
+        default: 'http://127.0.0.1:8000/mcp',
+        description: 'The URL of the LiteLLM MCP server.',
+        showInDialog: false,
+      },
+    },
+  },
+
   mcp: {
     type: 'object',
     label: 'MCP',
