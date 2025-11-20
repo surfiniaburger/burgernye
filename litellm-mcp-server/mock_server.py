@@ -1,6 +1,6 @@
 import asyncio
 from mcp.server.lowlevel import Server
-from mcp.server.streamable_http import StreamableHttpTransport
+import mcp.server.stdio
 from mcp import types
 
 class MockMCPTool:
@@ -22,9 +22,7 @@ class MockMCPTool:
         return {"response": f"You said: {kwargs['message']}"}
 
 async def main():
-    transport = StreamableHttpTransport(port=8000)
-    server = Server(transport=transport)
-
+    server = Server(name="mock-mcp-server")
     @server.list_tools()
     async def list_tools() -> list[types.Tool]:
         return [
@@ -52,9 +50,13 @@ async def main():
         else:
             raise ValueError(f"Tool not found: {name}")
 
-    print("Starting mock MCP server on port 8000...")
-    await server.start()
-    await server.wait()
+    print("Starting mock MCP server (stdio)...")
+    await mcp.server.stdio.run(server)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nServer stopped.")
+    except Exception as e:
+        print(f"Server encountered an error: {e}")

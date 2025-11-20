@@ -383,7 +383,6 @@ export async function loadCliConfig(
   const folderTrust = settings.security?.folderTrust?.enabled ?? false;
   const trustedFolder = isWorkspaceTrusted(settings)?.isTrusted ?? true;
 
-
   const fileService = new FileDiscoveryService(cwd);
 
   const memoryFileFiltering = {
@@ -631,7 +630,7 @@ export async function loadCliConfig(
     output: {
       format: (argv.outputFormat ?? settings.output?.format) as OutputFormat,
     },
-    useModelRouter,
+    useModelRouter: false,
     enableMessageBusIntegration,
     codebaseInvestigatorSettings:
       settings.experimental?.codebaseInvestigatorSettings,
