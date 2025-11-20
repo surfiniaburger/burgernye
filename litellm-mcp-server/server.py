@@ -16,9 +16,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("litellm_mcp_server")
 
 async def handle_initialize():
-    """
-    Standard MCP Handshake response to stop the CLI errors.
-    """
     return {
         "protocolVersion": "2024-11-05",
         "capabilities": {
@@ -26,10 +23,7 @@ async def handle_initialize():
             "prompts": {"listChanged": False},
             "resources": {"listChanged": False, "subscribe": False}
         },
-        "serverInfo": {
-            "name": "burgernye-server",
-            "version": "1.0.0"
-        }
+        "serverInfo": {"name": "burgernye-server", "version": "1.0.0"}
     }
 
 async def list_tools():
@@ -45,6 +39,42 @@ async def list_tools():
         }]
     }
 
+async def count_tokens(body):
+    """Handles token counting via LiteLLM"""
+    args = body.get("arguments", {})
+    prompt = args.get("prompt")
+    model = args.get("model", "ollama/llama3")
+    
+    if not prompt:
+        return {"totalTokens": 0}
+        
+    try:
+        # LiteLLM token counter
+        count = litellm.token_counter(model=model, text=prompt)
+        return {"totalTokens": count}
+    except Exception as e:
+        logger.error(f"Token Count Error: {e}")
+        # Fallback: rough character count estimation if model specific tokenizer fails
+        return {"totalTokens": len(prompt) // 4}
+
+async def embed_content(body):
+    """Handles embedding generation via LiteLLM"""
+    args = body.get("arguments", {})
+    content = args.get("content") # string
+    model = args.get("model", "ollama/all-minilm") # Embedding model
+    
+    if not content:
+        return {"embedding": {"values": []}}
+
+    try:
+        # LiteLLM embedding
+        response = await litellm.aembedding(model=model, input=[content])
+        embedding = response.data[0]['embedding']
+        return {"embedding": {"values": embedding}}
+    except Exception as e:
+        logger.error(f"Embedding Error: {e}")
+        return {"error": str(e)}
+
 async def call_tool(body):
     args = body.get("arguments", {})
     prompt = args.get("prompt")
@@ -57,6 +87,11 @@ async def call_tool(body):
     logger.info(f"Incoming Request: Model='{model}' | Tools={len(tools) if tools else 0}")
 
     try:
+        if tools:
+            for t in tools:
+                if "type" not in t:
+                    t["type"] = "function"
+                    
         response = await litellm.acompletion(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -67,15 +102,22 @@ async def call_tool(body):
         message = choice.message
         
         result = {
-            "content": message.content or "",
+            "content": message.content,
             "tool_calls": []
         }
 
         if hasattr(message, 'tool_calls') and message.tool_calls:
             for tc in message.tool_calls:
+                args_val = tc.function.arguments
+                if isinstance(args_val, str):
+                    try:
+                        args_val = json.loads(args_val)
+                    except json.JSONDecodeError:
+                        pass 
+
                 result["tool_calls"].append({
                     "name": tc.function.name,
-                    "arguments": json.loads(tc.function.arguments) 
+                    "arguments": args_val 
                 })
 
         return result
@@ -85,38 +127,34 @@ async def call_tool(body):
         return {"error": str(e)}
 
 async def mcp_handler(request):
-    # 1. Parse Request
     try:
         body = await request.json()
-    except:
+    except json.JSONDecodeError:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     method = body.get("method")
     req_id = body.get("id")
-    
-    # Check if this is a JSON-RPC request (The CLI uses this for discovery)
     is_jsonrpc = "jsonrpc" in body
-    
     response_data = None
 
-    # 2. Route Methods
+    # Route Methods
     if method == "initialize":
         response_data = await handle_initialize()
     elif method == "notifications/initialized":
-        # Just acknowledge
         pass 
     elif method == "tools/list":
         response_data = await list_tools()
     elif method == "tools/call":
         response_data = await call_tool(body)
+    elif method == "litellm/count_tokens":  # NEW
+        response_data = await count_tokens(body)
+    elif method == "litellm/embed_content": # NEW
+        response_data = await embed_content(body)
     elif request.method == "GET":
         return JSONResponse({"status": "online"})
     else:
-        # Fallback for custom non-RPC calls if needed
         return JSONResponse({"error": "Method not found"}, status_code=404)
 
-    # 3. Format Response
-    # If the client sent JSON-RPC (like the Discovery process), we MUST return JSON-RPC
     if is_jsonrpc and response_data is not None:
         return JSONResponse({
             "jsonrpc": "2.0",
@@ -124,7 +162,6 @@ async def mcp_handler(request):
             "result": response_data
         })
     
-    # Otherwise return raw JSON (for our LiteLLMContentGenerator)
     if response_data:
         return JSONResponse(response_data)
     
