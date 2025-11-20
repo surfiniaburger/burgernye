@@ -4,24 +4,28 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import {
-  CountTokensResponse,
+// Import EVERYTHING from the SDK
+import type {
   GenerateContentResponse,
+  CountTokensResponse,
+  EmbedContentResponse,
   GenerateContentParameters,
   CountTokensParameters,
-  EmbedContentResponse,
   EmbedContentParameters,
-} from './liteLLMContentGenerator';
-import type { Config } from '../config/config.js';
+} from '@google/genai';
 
+import type { Config } from '../config/config.js';
 import type { UserTierId } from '../code_assist/types.js';
 import { FakeContentGenerator } from './fakeContentGenerator.js';
 import { RecordingContentGenerator } from './recordingContentGenerator.js';
 import { LiteLLMContentGenerator } from './liteLLMContentGenerator.js';
 
-/**
- * Interface abstracting the core functionalities for generating content and counting tokens.
- */
+export type {
+  GenerateContentParameters,
+  CountTokensParameters,
+  EmbedContentParameters,
+};
+
 export interface ContentGenerator {
   generateContent(
     request: GenerateContentParameters,
@@ -42,47 +46,57 @@ export interface ContentGenerator {
 
 export enum AuthType {
   LITELLM = 'litellm',
+  LOGIN_WITH_GOOGLE = 'login_with_google',
+  USE_GEMINI = 'use_gemini',
+  USE_VERTEX_AI = 'use_vertex_ai',
+  COMPUTE_ADC = 'compute_adc',
 }
 
 export type ContentGeneratorConfig = {
+  authType?: AuthType;
+  mcpServerUrl?: string;
   apiKey?: string;
   vertexai?: boolean;
-  authType?: AuthType;
   proxy?: string;
-  mcpServerUrl?: string;
 };
 
 export async function createContentGeneratorConfig(
   config: Config,
   authType: AuthType | undefined,
 ): Promise<ContentGeneratorConfig> {
-  const contentGeneratorConfig: ContentGeneratorConfig = {
-    authType,
-    proxy: config?.getProxy(),
+  return {
+    authType: authType || AuthType.LITELLM,
     mcpServerUrl:
-      authType === AuthType.LITELLM
-        ? config?.getLiteLLMMcpServerUrl()
-        : config?.getMcpServerUrl(),
+      config?.getLiteLLMMcpServerUrl?.() || 'http://127.0.0.1:8000/mcp',
+    proxy: config?.getProxy(),
   };
-
-  return contentGeneratorConfig;
 }
 
 export async function createContentGenerator(
   config: ContentGeneratorConfig,
   gcConfig: Config,
-  sessionId?: string,
+  _sessionId?: string,
 ): Promise<ContentGenerator> {
   const generator = await (async () => {
     if (gcConfig.fakeResponses) {
       return FakeContentGenerator.fromFile(gcConfig.fakeResponses);
     }
 
-    if (config.authType === AuthType.LITELLM) {
+    // --- FIX: Hijack the default logic ---
+    if (
+      config.authType === AuthType.LITELLM ||
+      config.authType === AuthType.USE_GEMINI ||
+      !config.authType
+    ) {
+      console.log(
+        '\x1b[33m%s\x1b[0m',
+        '[DEBUG] 🔧 Factory: Hijacking request to use LiteLLMContentGenerator',
+      );
       return new LiteLLMContentGenerator(
         config.mcpServerUrl || 'http://127.0.0.1:8000/mcp',
       );
     }
+
     throw new Error(
       `Error creating contentGenerator: Unsupported authType: ${config.authType}`,
     );
