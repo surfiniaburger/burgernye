@@ -162,7 +162,7 @@ def extract_json_tool_call(text):
                     try:
                         data = json.loads(candidate)
                         if "name" in data and "arguments" in data: return data
-                    except: continue
+                    except json.JSONDecodeError: continue
     return None
 
 def tools_to_text(tools):
