@@ -1,5 +1,0 @@
-fastmcp
-litellm
-uvicorn
-python-dotenv
-starlette

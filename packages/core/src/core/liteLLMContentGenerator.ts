@@ -5,7 +5,6 @@
  */
 
 import type { ContentGenerator } from './contentGenerator.js';
-
 import type {
   GenerateContentResponse,
   CountTokensResponse,
@@ -21,16 +20,7 @@ import type {
 
 interface GeminiCliRequest extends GenerateContentParameters {
   tools?: Tool[];
-  config?: {
-    tools?: Tool[];
-    [key: string]: unknown;
-  };
-}
-
-interface ExtendedEmbedParams {
-  content?: Content;
-  contents?: Content | Content[];
-  model?: string;
+  config?: { tools?: Tool[]; [key: string]: unknown };
 }
 
 interface ToolPart extends Part {
@@ -49,7 +39,7 @@ export class LiteLLMContentGenerator implements ContentGenerator {
 
   private resolveModel(inputModel?: string): string {
     if (!inputModel || inputModel === 'default-model') {
-      return 'ollama/qwen3-coder:480b-cloud';
+      return 'ollama/gpt-oss:120b-cloud';
     }
     return inputModel;
   }
@@ -69,12 +59,10 @@ export class LiteLLMContentGenerator implements ContentGenerator {
               .map((p) => {
                 const part = p as ToolPart;
                 if (part.text) return part.text;
-                if (part.functionCall) {
+                if (part.functionCall)
                   return `\n[Action: Call Tool ${part.functionCall.name} with args ${JSON.stringify(part.functionCall.args)}]`;
-                }
-                if (part.functionResponse) {
+                if (part.functionResponse)
                   return `\n[Action Result: ${JSON.stringify(part.functionResponse.response)}]`;
-                }
                 return '';
               })
               .join(' ');
@@ -118,17 +106,11 @@ export class LiteLLMContentGenerator implements ContentGenerator {
     const { contents, model } = request;
 
     let tools = cliRequest.tools;
-    if (!tools && cliRequest.config?.tools) {
-      tools = cliRequest.config.tools;
-    }
+    if (!tools && cliRequest.config?.tools) tools = cliRequest.config.tools;
 
     const prompt = this.formatPrompt(contents);
     const targetModel = this.resolveModel(model);
     const openAITools = this.mapTools(tools);
-
-    console.log(
-      `[DEBUG] 🚀 LiteLLM Request -> Model: ${targetModel} | Tools: ${openAITools?.length || 0}`,
-    );
 
     try {
       const response = await fetch(this.mcpServerUrl, {
@@ -136,36 +118,29 @@ export class LiteLLMContentGenerator implements ContentGenerator {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           method: 'tools/call',
-          arguments: {
-            prompt,
-            model: targetModel,
-            tools: openAITools,
-          },
+          arguments: { prompt, model: targetModel, tools: openAITools },
         }),
       });
 
-      if (!response.ok) {
+      if (!response.ok)
         throw new Error(`LiteLLM Server Error: ${response.status}`);
-      }
-
       const data = await response.json();
+      if (data.error) throw new Error(`LiteLLM Backend Error: ${data.error}`);
+
       const parts: Part[] = [];
 
-      if (data.content) parts.push({ text: data.content });
+      // --- CRITICAL CHANGE: Prioritize Tools Over Text ---
+      const hasToolCalls =
+        data.tool_calls &&
+        Array.isArray(data.tool_calls) &&
+        data.tool_calls.length > 0;
 
-      if (data.tool_calls && Array.isArray(data.tool_calls)) {
+      if (hasToolCalls) {
+        // If we have a tool call, IGNORE content. Send ONLY the function call.
         console.log(
-          `[DEBUG] 🛠️ Received ${data.tool_calls.length} Tool Calls from Server`,
+          `[DEBUG] 🛠️ Processing ${data.tool_calls.length} tool calls (Stripping text)`,
         );
         for (const tc of data.tool_calls) {
-          // --- ADDED LOGS HERE ---
-          console.log(`[DEBUG] 🔨 Tool Name: ${tc.name}`);
-          console.log(
-            `[DEBUG] 📦 Tool Args:`,
-            JSON.stringify(tc.arguments, null, 2),
-          );
-          // -----------------------
-
           parts.push({
             functionCall: {
               name: tc.name,
@@ -173,9 +148,25 @@ export class LiteLLMContentGenerator implements ContentGenerator {
             },
           });
         }
+      } else {
+        // Only send text if there are NO tool calls
+        if (data.content) {
+          parts.push({ text: data.content });
+        }
       }
+      // --------------------------------------------------
 
-      return {
+      // Safety: If absolutely nothing, return ellipses to prevent UI hang
+      if (parts.length === 0) parts.push({ text: '...' });
+
+      // --- FINAL DEBUG LOG ---
+      console.log(
+        '[DEBUG] FINAL PARTS SENT TO CLI:',
+        JSON.stringify(parts, null, 2),
+      );
+      // ----------------------
+
+      const finalResponse = {
         candidates: [
           {
             content: { parts, role: 'model' },
@@ -184,8 +175,10 @@ export class LiteLLMContentGenerator implements ContentGenerator {
           },
         ],
       } as GenerateContentResponse;
+
+      return finalResponse;
     } catch (error) {
-      console.error('[DEBUG] 💥 Generation Error:', error);
+      console.error(error);
       throw error;
     }
   }
@@ -208,42 +201,8 @@ export class LiteLLMContentGenerator implements ContentGenerator {
   }
 
   async embedContent(
-    request: EmbedContentParameters,
+    _request: EmbedContentParameters,
   ): Promise<EmbedContentResponse> {
-    const extReq = request as unknown as ExtendedEmbedParams;
-    const inputContent = extReq.contents || extReq.content;
-    const model = request.model;
-
-    let contentForPrompt = inputContent;
-    if (
-      inputContent &&
-      typeof inputContent === 'object' &&
-      !Array.isArray(inputContent) &&
-      !('length' in inputContent)
-    ) {
-      contentForPrompt = [inputContent as Content];
-    }
-
-    const prompt = this.formatPrompt(
-      contentForPrompt as GenerateContentParameters['contents'],
-    );
-    const targetModel = model || 'ollama/all-minilm';
-
-    const response = await fetch(this.mcpServerUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        method: 'litellm/embed_content',
-        arguments: { content: prompt, model: targetModel },
-      }),
-    });
-
-    if (!response.ok)
-      return { embeddings: [] } as unknown as EmbedContentResponse;
-
-    const data = await response.json();
-    return {
-      embeddings: [{ values: data.embedding?.values || [] }],
-    } as unknown as EmbedContentResponse;
+    return { embeddings: [] } as unknown as EmbedContentResponse;
   }
 }
