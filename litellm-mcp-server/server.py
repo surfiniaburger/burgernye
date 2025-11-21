@@ -218,7 +218,7 @@ async def call_tool(body):
 
 async def mcp_handler(request):
     try: body = await request.json()
-    except: return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    except json.JSONDecodeError: return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     method = body.get("method")
     req_id = body.get("id")
