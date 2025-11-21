@@ -50,6 +50,7 @@ export enum AuthType {
   USE_GEMINI = 'use_gemini',
   USE_VERTEX_AI = 'use_vertex_ai',
   COMPUTE_ADC = 'compute_adc',
+  LEGACY_CLOUD_SHELL = 'legacy_cloud_shell',
 }
 
 export type ContentGeneratorConfig = {

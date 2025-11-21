@@ -1,19 +1,131 @@
 import logging
 import os
+import re
 import json
 from dotenv import load_dotenv
 import litellm
 from starlette.applications import Starlette
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 import uvicorn
 
-# Load environment variables
 load_dotenv()
-
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("litellm_mcp_server")
+
+# DEFAULT_MODEL = "ollama/gpt-oss:120b-cloud"
+
+# --- BALANCED SYSTEM PROMPT ---
+# SYSTEM_PROMPT = 
+"""
+You are Burgernye, an expert CLI operator.
+
+RULES:
+1. **CHATTING**: If the user says "hi", "hello", or asks a general question, REPLY WITH PLAIN TEXT. Do NOT use tools.
+2. **ACTIONS**: If the user asks to perform a task (edit file, run command), you MUST use a tool.
+3. **TOOL FORMAT**: To use a tool, output a JSON block.
+
+FORMAT FOR TOOLS:
+{
+  "name": "run_shell_command",
+  "arguments": {
+     "command": "echo 'text' >> README.md"
+  }
+}
+"""
+
+DEFAULT_MODEL = "ollama/gpt-oss:120b-cloud"
+
+SYSTEM_PROMPT = """
+You are **Burgernye**, an expert CLI operator and tool-driven assistant.
+
+Your job is to interpret user requests and either:
+- respond conversationally (plain text), OR
+- trigger a tool by outputting a JSON block.
+
+Follow these rules exactly:
+
+────────────────────────────────────────────────────────
+GENERAL RULES
+────────────────────────────────────────────────────────
+1. **If the user is chatting**, greeting, or asking a question that does NOT require an action
+   → Respond normally in plain text.
+   Examples:
+     - "hi", "hello", "who are you?"
+     - "explain this"
+     - "what does this do?"
+
+2. **If the user requests an ACTION**, such as:
+     - modifying files
+     - running shell commands
+     - reading/writing/updating code
+     - interacting with the system
+   → You MUST use a tool.
+
+3. **Never mix chat + JSON in the same response.**
+   When using a tool, the ENTIRE output must be ONLY a JSON block.
+
+4. **Never explain the JSON. Never add commentary.**
+   Output only the JSON block.
+
+────────────────────────────────────────────────────────
+TOOL USAGE FORMAT
+────────────────────────────────────────────────────────
+To call a tool, return EXACTLY one JSON block with this shape:
+
+```json
+{
+  "name": "tool_name_here",
+  "arguments": {
+    "key1": "value1",
+    "key2": "value2"
+  }
+}
+No extra keys. No wrapping text. No markdown outside the block.
+
+────────────────────────────────────────────────────────
+DECISION LOGIC (VERY IMPORTANT)
+────────────────────────────────────────────────────────
+You must decide:
+
+• If the user is asking for information → reply normally (text).
+• If the user is requesting an operation → output a tool JSON block.
+
+Examples:
+
+User: "Rewrite this file"
+→ TOOL
+
+User: "What does this error mean?"
+→ TEXT
+
+User: "Append this line to README.md"
+→ TOOL
+
+User: "Thanks!"
+→ TEXT
+
+────────────────────────────────────────────────────────
+STRICTNESS
+────────────────────────────────────────────────────────
+
+If unsure, ask for clarification in plain text.
+
+Never guess tool names.
+
+Never invent new tools.
+
+Never output malformed JSON.
+
+Never include trailing commas.
+
+────────────────────────────────────────────────────────
+END OF SYSTEM RULES
+────────────────────────────────────────────────────────
+"""
+
+
+# --- HANDLERS ---
 
 async def handle_initialize():
     return {
@@ -27,144 +139,113 @@ async def handle_initialize():
     }
 
 async def list_tools():
-    return {
-        "tools": [{
-            "name": "ask_opensource_model",
-            "description": "Bridge to OpenSource Models",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"prompt": {"type": "string"}},
-                "required": ["prompt"]
-            }
-        }]
-    }
+    # Minimal placeholder
+    return {"tools": [{"name": "any_tool", "inputSchema": {"type": "object"}}]} 
 
-async def count_tokens(body):
-    """Handles token counting via LiteLLM"""
-    args = body.get("arguments", {})
-    prompt = args.get("prompt")
-    model = args.get("model", "ollama/llama3")
-    
-    if not prompt:
-        return {"totalTokens": 0}
-        
-    try:
-        # LiteLLM token counter
-        count = litellm.token_counter(model=model, text=prompt)
-        return {"totalTokens": count}
-    except Exception as e:
-        logger.error(f"Token Count Error: {e}")
-        # Fallback: rough character count estimation if model specific tokenizer fails
-        return {"totalTokens": len(prompt) // 4}
+async def list_prompts(): return {"prompts": []}
+async def list_resources(): return {"resources": []}
+async def count_tokens(body): return {"totalTokens": 0}
+async def embed_content(body): return {"embedding": {"values": []}}
 
-async def embed_content(body):
-    """Handles embedding generation via LiteLLM"""
-    args = body.get("arguments", {})
-    content = args.get("content") # string
-    model = args.get("model", "ollama/all-minilm") # Embedding model
-    
-    if not content:
-        return {"embedding": {"values": []}}
+def extract_json_tool_call(text):
+    depth = 0
+    start_index = -1
+    for i, char in enumerate(text):
+        if char == '{':
+            if depth == 0: start_index = i
+            depth += 1
+        elif char == '}':
+            if depth > 0:
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start_index : i+1]
+                    try:
+                        data = json.loads(candidate)
+                        if "name" in data and "arguments" in data: return data
+                    except: continue
+    return None
 
-    try:
-        # LiteLLM embedding
-        response = await litellm.aembedding(model=model, input=[content])
-        embedding = response.data[0]['embedding']
-        return {"embedding": {"values": embedding}}
-    except Exception as e:
-        logger.error(f"Embedding Error: {e}")
-        return {"error": str(e)}
+def tools_to_text(tools):
+    if not tools: return ""
+    desc = "\nAVAILABLE TOOLS:\n"
+    for t in tools:
+        name = t.get("function", {}).get("name", t.get("name", "unknown"))
+        desc += f"- {name}\n"
+    return desc
 
 async def call_tool(body):
     args = body.get("arguments", {})
     prompt = args.get("prompt")
-    model = args.get("model", "ollama/llama3")
+    model = args.get("model") or DEFAULT_MODEL
     tools = args.get("tools", None) 
 
-    if not prompt:
-        return {"error": "Missing prompt"}
+    if not prompt: return {"error": "Missing prompt"}
 
-    logger.info(f"Incoming Request: Model='{model}' | Tools={len(tools) if tools else 0}")
+    # Add tool list to system prompt
+    full_prompt = SYSTEM_PROMPT + tools_to_text(tools)
+
+    logger.info(f"Req: {model} | Tools: {len(tools) if tools else 0}")
 
     try:
-        if tools:
-            for t in tools:
-                if "type" not in t:
-                    t["type"] = "function"
-                    
         response = await litellm.acompletion(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
-            tools=tools if tools else None,
+            messages=[
+                {"role": "system", "content": full_prompt},
+                {"role": "user", "content": prompt}
+            ],
         )
         
-        choice = response.choices[0]
-        message = choice.message
+        content = response.choices[0].message.content or ""
+        logger.info(f"RAW:\n{content[:200]}... (truncated)") 
+
+        tool_calls = []
+        extracted = extract_json_tool_call(content)
         
-        result = {
-            "content": message.content,
-            "tool_calls": []
-        }
+        if extracted:
+            logger.info(f"SUCCESS: Extracted tool {extracted['name']}")
+            tool_calls.append(extracted)
+            content = f"(Executing tool: {extracted['name']})"
+        
+        # If no tools found, return the content as plain text
+        if not tool_calls and not content.strip():
+            content = "(Model returned empty response)"
 
-        if hasattr(message, 'tool_calls') and message.tool_calls:
-            for tc in message.tool_calls:
-                args_val = tc.function.arguments
-                if isinstance(args_val, str):
-                    try:
-                        args_val = json.loads(args_val)
-                    except json.JSONDecodeError:
-                        pass 
-
-                result["tool_calls"].append({
-                    "name": tc.function.name,
-                    "arguments": args_val 
-                })
-
-        return result
+        return {"content": content, "tool_calls": tool_calls}
 
     except Exception as e:
-        logger.error(f"LiteLLM Error: {e}")
-        return {"error": str(e)}
+        logger.error(f"Error: {e}")
+        return {"content": f"Error calling model: {str(e)}"}
 
 async def mcp_handler(request):
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+    try: body = await request.json()
+    except: return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     method = body.get("method")
     req_id = body.get("id")
     is_jsonrpc = "jsonrpc" in body
+    
+    if method == "notifications/initialized":
+        return Response(status_code=200)
+
     response_data = None
-
-    # Route Methods
-    if method == "initialize":
-        response_data = await handle_initialize()
-    elif method == "notifications/initialized":
-        pass 
-    elif method == "tools/list":
-        response_data = await list_tools()
-    elif method == "tools/call":
-        response_data = await call_tool(body)
-    elif method == "litellm/count_tokens":  # NEW
-        response_data = await count_tokens(body)
-    elif method == "litellm/embed_content": # NEW
-        response_data = await embed_content(body)
-    elif request.method == "GET":
-        return JSONResponse({"status": "online"})
-    else:
-        return JSONResponse({"error": "Method not found"}, status_code=404)
-
-    if is_jsonrpc and response_data is not None:
-        return JSONResponse({
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": response_data
-        })
     
-    if response_data:
-        return JSONResponse(response_data)
-    
+    if method == "initialize": response_data = await handle_initialize()
+    elif method == "tools/list": response_data = await list_tools()
+    elif method == "prompts/list": response_data = await list_prompts()
+    elif method == "resources/list": response_data = await list_resources()
+    elif method == "tools/call": response_data = await call_tool(body)
+    elif method == "litellm/count_tokens": response_data = await count_tokens(body)
+    elif method == "litellm/embed_content": response_data = await embed_content(body)
+    elif request.method == "GET": return JSONResponse({"status": "online"})
+    else: return JSONResponse({"error": "Method not found"}, status_code=404)
+
+    if is_jsonrpc:
+        if response_data is not None:
+             return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": response_data})
+        else:
+             return JSONResponse({"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Method not found"}})
+
+    if response_data: return JSONResponse(response_data)
     return JSONResponse({"status": "ok"})
 
 app = Starlette(routes=[Route("/mcp", endpoint=mcp_handler, methods=["GET", "POST"])])
