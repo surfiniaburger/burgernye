@@ -38,8 +38,9 @@ export class LiteLLMContentGenerator implements ContentGenerator {
   }
 
   private resolveModel(inputModel?: string): string {
-    if (!inputModel || inputModel === 'default-model')
+    if (!inputModel || inputModel === 'default-model') {
       return 'ollama/gpt-oss:120b-cloud';
+    }
     return inputModel;
   }
 
